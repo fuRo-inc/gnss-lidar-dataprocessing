@@ -96,7 +96,7 @@ private:
     // 当前文件偏移
     size_t _fpos;
     // 块大小
-    static const size_t CHUNK_SIZE = 64 * 1024 * 1024; // 64MB
+    static constexpr size_t CHUNK_SIZE = 64 * 1024 * 1024; // 64MB
     // 是否已经映射
     bool _is_mapped;
 
@@ -417,7 +417,7 @@ private:
         return true;
     }
 };
-
+constexpr size_t PcapSource::Private::CHUNK_SIZE;
 PcapSource::PcapSource(std::string path, int packet_interval)
     : _p(new Private)
     , pcap_udp_header_{0, 0, 0, 0}

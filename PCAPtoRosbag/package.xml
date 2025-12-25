@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>PCAPtoRosbag</name>
+  <version>0.0.1</version>
+  <description>Convert Hesai PCAP to ROS 2 bag (mcap) with pointcloud output.</description>
+
+  <maintainer email="wataru@furo-inc.com">Wataru Oshima</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>builtin_interfaces</depend>
+
+  <!-- for get_package_share_directory -->
+  <depend>ament_index_cpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

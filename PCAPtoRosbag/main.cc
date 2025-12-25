@@ -1,8 +1,8 @@
-#include <hesai_lidar_sdk.hpp>
+#include "driver/hesai_lidar_sdk.hpp"
+#include "libhesai/lidar_types.h"
 #include <rosbag2_cpp/writer.hpp>
 #include <std_msgs/msg/header.hpp>
 //#include "../../HesaiLidar_ROS_2.0/src/manager/source_driver_ros2.hpp"
-#include <lidar_types.h>
 #include <string>
 #include <rosbag2_storage/storage_options.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -19,7 +19,7 @@
 #include <hesai_ros_driver/msg/ptp.hpp>
 #include <hesai_ros_driver/msg/firetime.hpp>
 #include <hesai_ros_driver/msg/loss_packet.hpp>
-
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <fstream>
 #include <memory>
 #include <chrono>
@@ -28,7 +28,8 @@
 #include <regex>
 #include <csignal>
 #include <boost/thread.hpp>
-
+#include <filesystem>
+namespace stdfs = std::filesystem;
 uint32_t last_frame_time = 0;
 uint32_t cur_frame_time = 0;
 std::string frame_id = "lidar";
@@ -108,7 +109,7 @@ void lidarCallback(const LidarDecodedFrame<LidarPointXYZIRT>  &frame) {
   serializer.serialize_message(&ros_msg, &serialized_msg);
 
   auto msg_ptr = std::make_shared<rclcpp::SerializedMessage>(serialized_msg);
-  writer.write(msg_ptr, "/lidar/points", "sensor_msgs/msg/PointCloud2", ros_msg.header.stamp);
+  writer.write(msg_ptr, "/points_raw", "sensor_msgs/msg/PointCloud2", ros_msg.header.stamp);
 }
 
 void faultMessageCallback(const FaultMessageInfo& fault_message_info) {
@@ -130,38 +131,65 @@ void signalHandler(int signum) {
 
 int main(int argc, char *argv[])
 {
-  if (argc == 1) {
-    std::cout << "Enter a pcap file as an argument, e.g. PCAPtoBag ./hesai_lidar.pcap" << std::endl;
-    return -1;
+  if (argc < 2) {
+    std::cerr << "Usage: ros2 run PCAPtoRosbag PCAPtoBag <pcap_path>\n";
+    return 1;
   }
+
   rclcpp::init(argc, argv);
+  const std::string pcap_path_string = argv[1];
+  std::cout << "[INFO] pcap_path = " << pcap_path_string << std::endl;
+  stdfs::path pcap_path = stdfs::path(argv[1]);
+
+
+  // 例: /path/to/20251221_152940/hesai.pcap -> /path/to/20251221_152940/outputs/lidar
+  stdfs::path output_dir = pcap_path.parent_path() / "outputs" / "lidar";
+
+  // lidar そのものは作らない！ 親だけ作る
+  stdfs::create_directories(output_dir.parent_path());
+  if (stdfs::exists(output_dir)) {
+    stdfs::remove_all(output_dir);   // 上書き許可（危険なので注意）
+  }
+  rosbag2_storage::StorageOptions storage_options;
+  storage_options.uri = output_dir.string();
+  storage_options.storage_id = "mcap";
+
+  rosbag2_cpp::ConverterOptions converter_options;
+  writer.open(storage_options, converter_options);
+  
 
   HesaiLidarSdk<LidarPointXYZIRT> sample;
   DriverParam param;
   param.input_param.source_type = DATA_FROM_PCAP;
+  param.input_param.pcap_path = pcap_path; 
 
-  // output path
-  std::string output_path = std::regex_replace(argv[1], std::regex("inputs"), "outputs");
-  output_path = std::regex_replace(output_path, std::regex("hesai_lidar.pcap"), "lidar");
-  
-  // rosbag options
-  rosbag2_storage::StorageOptions storage_options;
-  storage_options.uri = output_path;
-  storage_options.storage_id = "mcap";
-  rosbag2_cpp::ConverterOptions converter_options;
-  writer.open(storage_options, converter_options);
-  
   // input/correction/firetime paths
-  std::string correction_path = std::regex_replace(argv[1], std::regex("inputs.*"), "PCAPtoRosbag/correction/angle_correction/XT32M2X_Angle Correction File.csv");
-  std::string firetimes_path = std::regex_replace(argv[1], std::regex("inputs.*"), "PCAPtoRosbag/correction/firetime_correction/PandarXT-32M2X_Firetime Correction File.csv");
-  param.input_param.pcap_path = argv[1];
-  param.input_param.correction_file_path = correction_path;
-  param.input_param.firetimes_path = firetimes_path;
-  
+  const auto share_dir = ament_index_cpp::get_package_share_directory("PCAPtoRosbag");
+  stdfs::path correction_dir = stdfs::path(share_dir) / "correction";
+
+  stdfs::path correction_csv =
+    correction_dir / "angle_correction" / "XT32M2X_Angle Correction File.csv";
+  stdfs::path firetime_csv =
+    correction_dir / "firetime_correction" / "PandarXT-32M2X_Firetime Correction File.csv";
+
+  // 存在チェック（無いとまた silent に空bag作るので早めに落とす）
+  if (!stdfs::exists(correction_csv)) {
+    std::cerr << "Correction CSV not found: " << correction_csv << std::endl;
+    return 1;
+  }
+  if (!stdfs::exists(firetime_csv)) {
+    std::cerr << "Firetime CSV not found: " << firetime_csv << std::endl;
+    return 1;
+  }
+
+  param.input_param.correction_file_path = correction_csv.string();
+  param.input_param.firetimes_path = firetime_csv.string();
   // other parameters
   param.decoder_param.distance_correction_flag = false;
   param.decoder_param.pcap_play_synchronization = false; // for speed up
-
+std::cout << "[INFO] param.input_param.pcap_path = " << param.input_param.pcap_path << std::endl;
+std::cout << "[INFO] correction = " << param.input_param.correction_file_path << std::endl;
+std::cout << "[INFO] firetimes  = " << param.input_param.firetimes_path << std::endl;
   // init lidar with param
   sample.Init(param);
 
