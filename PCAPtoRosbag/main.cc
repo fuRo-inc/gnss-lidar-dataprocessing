@@ -32,7 +32,7 @@
 namespace stdfs = std::filesystem;
 uint32_t last_frame_time = 0;
 uint32_t cur_frame_time = 0;
-std::string frame_id = "lidar";
+std::string frame_id = "hesai_lidar";
 rosbag2_cpp::Writer writer;
 bool endflag = false;
 
