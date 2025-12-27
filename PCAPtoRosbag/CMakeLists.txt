@@ -14,6 +14,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # ★ これ追加（shareディレクトリ検索に使う）
 find_package(ament_index_cpp REQUIRED)
@@ -80,6 +81,7 @@ target_link_libraries(PCAPtoBag
   log_lib
   rclcpp
   ${OPENSSL_LIBRARIES}
+  yaml-cpp
 )
 
 ament_target_dependencies(PCAPtoBag
@@ -87,6 +89,7 @@ ament_target_dependencies(PCAPtoBag
   rosbag2_cpp
   sensor_msgs
   ament_index_cpp       # ★ 追加
+  yaml-cpp
 )
 
 # 実行ファイルを install へ
@@ -106,6 +109,9 @@ set_target_properties(PCAPtoBag PROPERTIES
 )
 # ★ correction を share にインストール（②で使う）
 install(DIRECTORY correction
+  DESTINATION share/${PROJECT_NAME}
+)
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 
