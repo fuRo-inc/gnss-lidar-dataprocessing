@@ -1,0 +1,271 @@
+clear; close all; clc;
+
+%% -------- User settings --------
+dirname  = "20251231_182228";
+posFile  = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/astrx.pos";     % input .pos
+
+outdir    = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/outputs/gnss"; % output bag folder
+storage   = "mcap";                                                      % "mcap" or "sqlite3"
+
+topicSol  = "/gnss/solution";                                            % custom msg topic
+topicFix  = "/gnss/fix";                                                 % optional NavSatFix topic
+writeNavSatFixAlso = true;
+
+frameId   = "gps";                                                       % header.frame_id
+childId   = "gnss";                                                      % child_frame_id
+
+% Time conversion (GPST -> UTC)
+toUTCT    = 18;                                                          % [s] (for 2025 typically 18)
+
+% Keep policy (do not drop rows by Q; store validity instead)
+minQ_keep = 0;
+
+% Validity thresholds (start loose, tighten later)
+minQ_valid   = 1;      % Q >= 1
+minNs_valid  = 6;      % ns >= 6
+maxSigmaH_m  = 50.0;   % sqrt(sdn^2 + sde^2) <= 50m (loose)
+maxAge_s     = 999.0;  % abs(age) <= 999 (loose)
+minRatio     = 0.0;    % ratio >= 0 (loose)
+rejectNegativeAge = false;
+
+customMsgType = "furos_pkg2/GnssSolution";                               % ★ MATLAB format
+
+%% -------- Prepare output folder (must be empty) --------
+if isfolder(outdir)
+    rmdir(outdir, "s");
+end
+
+%% -------- Read .pos robustly: keep only data rows starting with YYYY/MM/DD --------
+fid = fopen(posFile, "r");
+assert(fid > 0, "Failed to open: %s", posFile);
+
+lines = strings(0,1);
+while true
+    tline = fgetl(fid);
+    if ~ischar(tline); break; end
+    tline = strip(string(tline));
+
+    if tline == "" || startsWith(tline, "%")
+        continue; % skip empty and comment
+    end
+
+    % Keep only RTKLIB-like data rows:
+    % "YYYY/MM/DD HH:MM:SS(.sss)  lat lon hgt Q ns ..."
+    if ~isempty(regexp(tline, "^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}", "once"))
+        lines(end+1,1) = tline; %#ok<SAGROW>
+    end
+end
+fclose(fid);
+
+assert(~isempty(lines), "No valid data lines found in .pos.");
+
+% Parse the kept lines (15 fields)
+% date time lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
+C = textscan(join(lines, newline), ...
+    "%s %s %f %f %f %d %d %f %f %f %f %f %f %f %f", ...
+    "MultipleDelimsAsOne", true);
+
+dateStr = string(C{1});
+timeStr = string(C{2});
+lat     = C{3};
+lon     = C{4};
+hgt     = C{5};
+Q       = C{6};
+ns      = C{7};
+sdn     = C{8};
+sde     = C{9};
+sdu     = C{10};
+sdne    = C{11};
+sdeu    = C{12};
+sdun    = C{13};
+age     = C{14};
+ratio   = C{15};
+
+fprintf("Loaded data rows=%d (after dropping non-data lines)\n", numel(lat));
+
+%% -------- Keep filter (optional) --------
+keep = (Q >= minQ_keep);
+dateStr = dateStr(keep); timeStr = timeStr(keep);
+lat = lat(keep); lon = lon(keep); hgt = hgt(keep);
+Q   = Q(keep); ns = ns(keep);
+sdn = sdn(keep); sde = sde(keep); sdu = sdu(keep);
+sdne= sdne(keep); sdeu = sdeu(keep); sdun = sdun(keep);
+age = age(keep); ratio = ratio(keep);
+
+N = numel(lat);
+fprintf("Loaded rows=%d (after keep filter Q>=%d)\n", N, minQ_keep);
+
+%% -------- Robust timestamp parse (correct order) --------
+tstr = strip(dateStr + " " + timeStr);
+
+% Normalize fractional seconds to .SSS if present and variable length
+% e.g. ".6" -> ".600", ".60" -> ".600", ".6000" -> ".600"
+hasDot = contains(tstr, ".");
+if any(hasDot)
+    parts = split(tstr(hasDot), ".");
+    frac  = parts(:,2);
+    frac  = extractBefore(frac, 4);          % keep up to 3 digits
+    frac  = pad(frac, 3, "right", "0");      % pad to 3 digits
+    tstr(hasDot) = parts(:,1) + "." + frac;
+end
+
+dt_gpst = NaT(size(tstr), "TimeZone","UTC");
+
+hasMs = contains(tstr, ".");
+dt_gpst(hasMs)  = datetime(tstr(hasMs),  "InputFormat","yyyy/MM/dd HH:mm:ss.SSS", "TimeZone","UTC");
+dt_gpst(~hasMs) = datetime(tstr(~hasMs), "InputFormat","yyyy/MM/dd HH:mm:ss",     "TimeZone","UTC");
+
+okTime = ~isnat(dt_gpst);
+badIdx = find(~okTime);
+
+fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
+if ~isempty(badIdx)
+    k = badIdx(1:min(20,end));
+    disp("---- examples of invalid time strings ----");
+    disp(tstr(k));
+end
+
+if any(~okTime)
+    fprintf("WARNING: %d rows have invalid timestamp. Dropping them.\n", nnz(~okTime));
+end
+
+% Drop invalid timestamps
+dt_gpst = dt_gpst(okTime);
+lat = lat(okTime); lon = lon(okTime); hgt = hgt(okTime);
+Q = Q(okTime); ns = ns(okTime);
+sdn = sdn(okTime); sde = sde(okTime); sdu = sdu(okTime);
+sdne = sdne(okTime); sdeu = sdeu(okTime); sdun = sdun(okTime);
+age = age(okTime); ratio = ratio(okTime);
+
+unix_time = posixtime(dt_gpst - seconds(toUTCT));
+N = numel(unix_time);
+
+fprintf("Time range: %.3f .. %.3f (unix)\n", unix_time(1), unix_time(end));
+if N > 1
+    fprintf("dt_median=%.6f s\n", median(diff(unix_time)));
+end
+
+%% -------- Precompute validity + reject_mask (do NOT drop rows by Q) --------
+reject_mask = zeros(N,1,'uint32');
+valid = true(N,1);
+
+sigma_h = sqrt(double(sdn).^2 + double(sde).^2);
+
+% bit0: Q too low
+badQ = (Q < minQ_valid);
+reject_mask(badQ) = bitor(reject_mask(badQ), uint32(1));
+valid(badQ) = false;
+
+% bit1: ns too small
+badNs = (ns < minNs_valid);
+reject_mask(badNs) = bitor(reject_mask(badNs), uint32(2));
+valid(badNs) = false;
+
+% bit2: sigma_h too large / invalid
+badSig = ~isfinite(sigma_h) | (sigma_h > maxSigmaH_m);
+reject_mask(badSig) = bitor(reject_mask(badSig), uint32(4));
+valid(badSig) = false;
+
+% bit3: age invalid/out of range
+age_d = double(age);
+badAge = ~isfinite(age_d);
+if rejectNegativeAge
+    badAge = badAge | (age_d < 0) | (age_d > maxAge_s);
+else
+    badAge = badAge | (abs(age_d) > maxAge_s);
+end
+reject_mask(badAge) = bitor(reject_mask(badAge), uint32(8));
+valid(badAge) = false;
+
+% bit4: ratio invalid/too low
+ratio_d = double(ratio);
+badRatio = ~isfinite(ratio_d) | (ratio_d < minRatio);
+reject_mask(badRatio) = bitor(reject_mask(badRatio), uint32(16));
+valid(badRatio) = false;
+
+fprintf("Validity: valid=%d / %d\n", nnz(valid), N);
+
+%% -------- Write ROS 2 bag --------
+bagWriter = ros2bagwriter(outdir, "StorageFormat", storage);
+
+for i = 1:N
+    % timestamps
+    sec  = floor(unix_time(i));
+    nsec = uint32(round((unix_time(i) - sec) * 1e9));
+    if nsec >= 1e9
+        sec = sec + 1;
+        nsec = uint32(nsec - 1e9);
+    end
+
+    % ----- custom msg (GnssSolution) -----
+    sol = ros2message(customMsgType);
+    sol.header.frame_id = char(frameId);
+    sol.header.stamp.sec     = int32(sec);
+    sol.header.stamp.nanosec = nsec;
+
+    sol.child_frame_id = char(childId);
+
+    sol.latitude  = double(lat(i));
+    sol.longitude = double(lon(i));
+    sol.altitude  = double(hgt(i));
+
+    sol.rtk_q   = uint8(Q(i));
+    sol.ns_used = uint16(ns(i));
+    sol.age_s   = single(age(i));
+    sol.ratio   = single(ratio(i));
+
+    sol.sdn  = single(sdn(i));
+    sol.sde  = single(sde(i));
+    sol.sdu  = single(sdu(i));
+    sol.sdne = single(sdne(i));
+    sol.sdeu = single(sdeu(i));
+    sol.sdun = single(sdun(i));
+
+    % ENU covariance: x=E, y=N, z=U
+    Cee = (double(sde(i))^2);
+    Cnn = (double(sdn(i))^2);
+    Cuu = (double(sdu(i))^2);
+    Cen = double(sdne(i));
+    Ceu = double(sdeu(i));
+    Cnu = double(sdun(i));
+
+    covENU = [ Cee, Cen, Ceu; ...
+               Cen, Cnn, Cnu; ...
+               Ceu, Cnu, Cuu ];
+
+    sol.position_covariance = reshape(covENU.', 9, 1); % 9x1 vector
+    sol.position_covariance_type = uint8(3);
+
+    sol.valid = logical(valid(i));
+    sol.reject_mask = uint32(reject_mask(i));
+
+    write(bagWriter, char(topicSol), ros2time(unix_time(i)), sol);
+
+    % ----- optional NavSatFix -----
+    if writeNavSatFixAlso
+        fix = ros2message("sensor_msgs/NavSatFix");
+        fix.header = sol.header;
+
+        if any(Q(i) == [1 2 4 5])
+            fix.status.status = int8(0);   % STATUS_FIX
+        else
+            fix.status.status = int8(-1);  % STATUS_NO_FIX
+        end
+        fix.status.service = uint16(1);
+
+        fix.latitude  = sol.latitude;
+        fix.longitude = sol.longitude;
+        fix.altitude  = sol.altitude;
+
+        fix.position_covariance = reshape(covENU.', 1, 9);
+        fix.position_covariance_type = uint8(3);
+
+        write(bagWriter, char(topicFix), ros2time(unix_time(i)), fix);
+    end
+end
+
+delete(bagWriter);
+clear bagWriter;
+
+fprintf("Done.\n  input : %s\n  output: %s\n  topic : %s\n  msgs  : %d\n", ...
+    posFile, outdir, topicSol, N);

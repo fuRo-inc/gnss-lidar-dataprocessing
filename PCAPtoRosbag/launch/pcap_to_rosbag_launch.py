@@ -45,7 +45,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "apply_axis_remap",
-                default_value="true",
+                default_value="false",
                 description="Enable PandarXT-style axis remapping",
             ),
             DeclareLaunchArgument(

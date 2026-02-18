@@ -1,7 +1,7 @@
 clear; close all; clc;
 
-dirname  = "20251221_152940";
-filename = "../lidar_gnss_log/"+dirname+"/astrx.sbf_SBF_ExtSensorMeas1.txt";
+dirname  = "test_20260217_15_30";
+filename = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/astrx.sbf_SBF_ExtSensorMeas1.txt";
 
 %% -------- Read CSV robustly (27 columns, header + dashed line) --------
 names = [ ...
@@ -93,15 +93,16 @@ t_gps = gps0 + days(7*M.WNc) + seconds(M.TOW);
 toUTCT = 18;  % GPS-UTC (seconds)
 unix_time = posixtime(t_gps - seconds(toUTCT));
 
-fprintf("Merged messages=%d, dt_median=%.6f s\n", numel(unix_time), median(diff(unix_time)));
+dt_med = median(diff(unix_time));
+fprintf("Merged messages=%d, dt_median=%.6f s\n", numel(unix_time), dt_med);
 
 %% -------- Optional plots --------
 tiledlayout(2,1,"TileSpacing","compact");
 nexttile; plot([M.ax M.ay M.az]); grid on; title("Acceleration"); ylabel("m/s^2"); legend("x","y","z");
 nexttile; plot([M.gx_deg M.gy_deg M.gz_deg]); grid on; title("Angular rate"); ylabel("deg/s"); legend("x","y","z");
 
-%% -------- Write ROS 2 bag (MCAP) --------
-outdir = "../lidar_gnss_log/"+dirname+"/outputs/imu";
+%% -------- Write ROS 2 bag (MCAP) + DROP CHECK DURING CONVERSION --------
+outdir = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/outputs/imu";
 
 % ros2bagwriter requires empty output directory
 if isfolder(outdir)
@@ -110,7 +111,87 @@ end
 
 bagWriter = ros2bagwriter(outdir, "StorageFormat", "mcap");
 
+%% -------- Write ROS 2 bag (MCAP) + SPLIT ON GAP DURING CONVERSION --------
+base_outdir = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/outputs";
+bag_prefix  = "imu";   % 生成されるフォルダ名: imu_001, imu_002, ...
+
+% ---- DROP CHECK CONFIG ----
+t0 = unix_time(1);
+
+dt_all  = diff(unix_time);
+dt_med  = median(dt_all);
+% しきい値：基本は dt_median の数倍。最低でも0.1s以上をギャップ扱いにする
+gap_thr = max(2*dt_med, 0.1);
+
+fprintf("dt_median=%.6f s, gap_thr=%.6f s\n", dt_med, gap_thr);
+
+% ---- helpers ----
+part_idx = 1;
+make_outdir = @(k) base_outdir + "/" + bag_prefix + "_" + sprintf("%03d", k);
+
+% ---- open first bag ----
+outdir = make_outdir(part_idx);
+if isfolder(outdir)
+    rmdir(outdir, "s");
+end
+bagWriter = ros2bagwriter(outdir, "StorageFormat", "mcap");
+fprintf("\n=== BAG SPLIT WRITE START ===\n");
+fprintf("Open: %s\n", outdir);
+
+% ---- bookkeeping ----
+gap_count = 0;
+gap_show_limit = 50;
+
+part_msg_count = 0;
+part_start_t   = unix_time(1);
+prev_t         = unix_time(1);
+
+% どこで分割されたか記録（後で要約表示）
+split_log = []; % rows: [part_idx, gap_index_i, since_min, dt]
+
 for i = 1:numel(unix_time)
+
+    % ---- GAP DETECTION ----
+    if i >= 2
+        dt = unix_time(i) - prev_t;
+        if dt > gap_thr
+            gap_count = gap_count + 1;
+            since_min = (prev_t - t0) / 60;   % ギャップの“直前”時刻（開始から何分後か）
+
+            % 表示（最初のN件だけ）
+            if gap_count <= gap_show_limit
+                fprintf("[GAP #%d] +%.3f min, dt=%.6f s (i=%d) -> SPLIT\n", ...
+                    gap_count, since_min, dt, i);
+            end
+
+            % split log
+            split_log(end+1, :) = [part_idx, i, since_min, dt]; %#ok<AGROW>
+
+            % ---- CLOSE CURRENT BAG ----
+            delete(bagWriter);
+            clear bagWriter;
+
+            part_end_t = prev_t;
+            fprintf("Close: part %03d  msgs=%d  span=%.3f s\n", ...
+                part_idx, part_msg_count, part_end_t - part_start_t);
+
+            % ---- OPEN NEXT BAG ----
+            part_idx = part_idx + 1;
+            outdir = make_outdir(part_idx);
+            if isfolder(outdir)
+                rmdir(outdir, "s");
+            end
+            bagWriter = ros2bagwriter(outdir, "StorageFormat", "mcap");
+            fprintf("Open : %s\n", outdir);
+
+            % reset counters for new part
+            part_msg_count = 0;
+            part_start_t   = unix_time(i);
+        end
+    end
+    prev_t = unix_time(i);
+
+    % ---- NORMAL CONVERSION (unchanged) ----
     msg = ros2message("sensor_msgs/Imu");
     msg.header.frame_id = 'imu';
 
@@ -131,9 +212,28 @@ for i = 1:numel(unix_time)
 
     % Use ros2time for bag timestamp
     write(bagWriter, "/imu/data", ros2time(unix_time(i)), msg);
+    part_msg_count = part_msg_count + 1;
 end
 
+% ---- CLOSE FINAL BAG ----
 delete(bagWriter);
 clear bagWriter;
+fprintf("Close: part %03d  msgs=%d  span=%.3f s\n", ...
+    part_idx, part_msg_count, unix_time(end) - part_start_t);
 
-disp("Done. Check with: ros2 bag info imu");
+fprintf("=== BAG SPLIT WRITE END: parts=%d, gaps=%d (thr=%.6f s) ===\n", ...
+    part_idx, gap_count, gap_thr);
+
+% ---- SUMMARY PRINT ----
+if gap_count > 0
+    fprintf("\n--- Split summary (first %d) ---\n", min(size(split_log,1), gap_show_limit));
+    for k = 1:min(size(split_log,1), gap_show_limit)
+        fprintf("part %03d -> %03d at +%.3f min, dt=%.6f s (i=%d)\n", ...
+            split_log(k,1), split_log(k,1)+1, split_log(k,3), split_log(k,4), split_log(k,2));
+    end
+    fprintf("NOTE: gaps detected, but conversion finished by splitting bags.\n");
+else
+    disp("Conversion complete: no time gaps detected (single bag).");
+end
+
+disp("Done. Check with e.g.: ros2 bag info " + make_outdir(1));
