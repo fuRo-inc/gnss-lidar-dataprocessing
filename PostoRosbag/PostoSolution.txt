@@ -1,7 +1,7 @@
 clear; close all; clc;
 
 %% -------- User settings --------
-dirname  = "/20260428_152738";
+dirname  = "20260318_101050";
 posFile  = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/astrx.pos";     % input .pos
 
 outdir    = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/outputs/gnss"; % output bag folder
