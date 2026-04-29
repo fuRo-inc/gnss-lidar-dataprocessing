@@ -1,6 +1,6 @@
 clear; close all; clc;
 
-dirname  = "test_20260217_15_30";
+dirname  = "20260428_152738";
 filename = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/astrx.sbf_SBF_ExtSensorMeas1.txt";
 
 %% -------- Read CSV robustly (27 columns, header + dashed line) --------

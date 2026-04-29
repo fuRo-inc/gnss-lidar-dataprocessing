@@ -417,7 +417,7 @@ private:
         return true;
     }
 };
-constexpr size_t PcapSource::Private::CHUNK_SIZE;
+
 PcapSource::PcapSource(std::string path, int packet_interval)
     : _p(new Private)
     , pcap_udp_header_{0, 0, 0, 0}
