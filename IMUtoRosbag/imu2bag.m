@@ -1,8 +1,10 @@
 clear; close all; clc;
 
-dirname  = "20260428_152738";
-filename = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/astrx.sbf_SBF_ExtSensorMeas1.txt";
-
+dirname  = "asaka_20260323_1";
+parentdirname = "lidar_gnss_log";
+username = "wataru";  % <-- CHANGE THIS TO YOUR USERNAME (for file paths)
+filename = "/home/" + username + "/" + parentdirname + "/" + dirname + "/astrx.sbf_SBF_ExtSensorMeas1.txt";
+outdir = "/home/" + username + "/" + parentdirname + "/" + dirname + "/outputs/imu";
 %% -------- Read CSV robustly (27 columns, header + dashed line) --------
 names = [ ...
 "TOW [s]","WNc [w]","N","Source","SensorModel","Type","ObsInfo", ...
@@ -102,7 +104,7 @@ nexttile; plot([M.ax M.ay M.az]); grid on; title("Acceleration"); ylabel("m/s^2"
 nexttile; plot([M.gx_deg M.gy_deg M.gz_deg]); grid on; title("Angular rate"); ylabel("deg/s"); legend("x","y","z");
 
 %% -------- Write ROS 2 bag (MCAP) + DROP CHECK DURING CONVERSION --------
-outdir = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/outputs/imu";
+
 
 % ros2bagwriter requires empty output directory
 if isfolder(outdir)
@@ -112,7 +114,7 @@ end
 bagWriter = ros2bagwriter(outdir, "StorageFormat", "mcap");
 
 %% -------- Write ROS 2 bag (MCAP) + SPLIT ON GAP DURING CONVERSION --------
-base_outdir = "/home/wataru-furo/lidar_gnss_log/"+dirname+"/outputs";
+base_outdir = "/home/" + username + "/ros_bags/"+dirname+"/outputs";
 bag_prefix  = "imu";   % 生成されるフォルダ名: imu_001, imu_002, ...
 
 % ---- DROP CHECK CONFIG ----

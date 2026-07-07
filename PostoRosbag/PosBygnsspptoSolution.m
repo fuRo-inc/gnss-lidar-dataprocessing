@@ -1,16 +1,20 @@
 clear; close all; clc;
 
 %% -------- User settings --------
-dirname  = "asaka_20260323_1";
-parentdirname = "lidar_gnss_log";
-username = "wataru";  % <-- CHANGE THIS TO YOUR USERNAME (for file paths)
-posFile  = "/home/" + username + "/" + parentdirname + "/" + dirname + "/astrx.pos";     % input .pos
+username = "wataru";
+dirname = "nayoro_true_route_20260225";
+% LibGNSS++ extended .pos generated from gnssplusplus-library after adding:
+% Sde(m) Sdn(m) Sdu(m) Sdne(m2) Sdeu(m2) Sdun(m2)
+%
+% Change this if your file path is different.
+posFile = "/home/" + username + "/ros_bags/" + dirname + "/outputs/gnsspp_rtk_kinematic_cov.pos";
 
-outdir   = "/home/" + username + "/" + parentdirname + "/" + dirname + "/outputs/gnss";  % output bag folder
-storage  = "mcap";                                                           % "mcap" or "sqlite3"
+% Output ROS 2 bag folder.
+outdir  = "/home/" + username + "/ros_bags/" + dirname + "/outputs/gnss";
+storage = "mcap";  % "mcap" or "sqlite3"
 
-topicSol = "/gnss/solution";                                                 % custom msg topic
-topicFix = "/gnss/fix";                                                      % optional NavSatFix topic
+topicSol = "/gnss/solution";   % custom msg topic
+topicFix = "/gnss/fix";        % optional NavSatFix topic
 writeNavSatFixAlso = true;
 
 % Match live RTK side
@@ -18,36 +22,30 @@ frameId = "gnss";
 childId = "gnss";
 
 % Time conversion (GPST -> UTC)
-toUTCT = 18;  % [s] for 2025
+% GPS-UTC offset is 18 s for current data around 2026.
+toUTCT = 18;  % [s]
 
 % Keep policy.
-% Keep rows by raw RTKLIB Q before normalization.
+% For RTKLIB format: raw RTKLIB Q.
+% For LibGNSS++ format: raw Status.
 % 0 means keep everything.
 minQ_keep = 0;
 
 % Validity thresholds.
-% This is rank-based after RTKLIB Q is normalized to live RTK-like rtk_q.
-%
 % rank:
 %   0 = invalid / no fix
 %   1 = single
 %   2 = DGPS
 %   3 = RTK float
 %   4 = RTK fixed
-%
-% Examples:
-%   minRank_valid = 4;  % fixed only
-%   minRank_valid = 3;  % fixed + float
-%   minRank_valid = 2;  % fixed + float + DGPS
-%   minRank_valid = 1;  % any GNSS solution except invalid
 minRank_valid = 1;
 
 minNs_valid   = 6;
 maxSigmaH_m   = 50.0;
 maxAge_s      = 999.0;
 
-% RTKPOST .pos age can be negative depending on processing/interpolation.
-% For live-RTK-like message, normalize to non-negative age.
+% RTKLIB .pos age can be negative depending on processing/interpolation.
+% LibGNSS++ .pos has no age field, so age is set to 0.
 useAbsAge = true;
 
 customMsgType = "furos_pkg2/GnssSolution";
@@ -62,6 +60,8 @@ fid = fopen(posFile, "r");
 assert(fid > 0, "Failed to open: %s", posFile);
 
 lines = strings(0,1);
+headerLines = strings(0,1);
+
 while true
     tline = fgetl(fid);
     if ~ischar(tline)
@@ -70,21 +70,23 @@ while true
 
     tline = strip(string(tline));
 
-    if tline == "" || startsWith(tline, "%")
+    if tline == ""
         continue;
     end
 
-    % RTKLIB-like data row:
-    %   YYYY/MM/DD HH:MM:SS(.sss) lat lon hgt Q ns ...
-    % or MRTKLIB/RTKLIB GPS week/TOW row:
-    %   GPS_WEEK GPS_TOW lat lon hgt Q ns ...
-    isDateTimeRow = ~isempty(regexp(tline, ...
-        "^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}", "once"));
+    if startsWith(tline, "%")
+        headerLines(end+1,1) = tline; %#ok<SAGROW>
+        continue;
+    end
 
-    isWeekTowRow = ~isempty(regexp(tline, ...
-        "^\d+\s+\d+(\.\d+)?\s+[-+]?\d", "once"));
-
-    if isDateTimeRow || isWeekTowRow
+    % Supported data rows:
+    % 1) RTKLIB-like:
+    %    YYYY/MM/DD HH:MM:SS(.sss) lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
+    %
+    % 2) LibGNSS++ extended:
+    %    GPS_Week GPS_TOW X Y Z Lat Lon Height Status NumSat ... Sde Sdn Sdu Sdne Sdeu Sdun
+    if ~isempty(regexp(tline, "^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}", "once")) || ...
+       ~isempty(regexp(tline, "^\d+\s+\d+(\.\d+)?\s+", "once"))
         lines(end+1,1) = tline; %#ok<SAGROW>
     end
 end
@@ -93,35 +95,12 @@ fclose(fid);
 assert(~isempty(lines), "No valid data lines found in .pos.");
 
 firstLine = lines(1);
+isRtklibDateFormat = ~isempty(regexp(firstLine, "^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}", "once"));
 
-isWeekTowFormat = ~isempty(regexp(firstLine, ...
-    "^\d+\s+\d+(\.\d+)?\s+[-+]?\d", "once"));
+%% -------- Parse .pos --------
+if isRtklibDateFormat
+    inputFormat = "RTKLIB";
 
-if isWeekTowFormat
-    % GPS_WEEK GPS_TOW lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
-    C = textscan(join(lines, newline), ...
-        "%f %f %f %f %f %d %d %f %f %f %f %f %f %f %f", ...
-        "MultipleDelimsAsOne", true);
-
-    gpsWeek = C{1};
-    gpsTow  = C{2};
-    lat     = C{3};
-    lon     = C{4};
-    hgt     = C{5};
-    Q       = C{6};
-    ns      = C{7};
-    sdn     = C{8};
-    sde     = C{9};
-    sdu     = C{10};
-    sdne    = C{11};
-    sdeu    = C{12};
-    sdun    = C{13};
-    age     = C{14};
-    ratio   = C{15};
-
-    dateStr = strings(size(lat));
-    timeStr = strings(size(lat));
-else
     % date time lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
     C = textscan(join(lines, newline), ...
         "%s %s %f %f %f %d %d %f %f %f %f %f %f %f %f", ...
@@ -132,7 +111,7 @@ else
     lat     = C{3};
     lon     = C{4};
     hgt     = C{5};
-    Q       = C{6};
+    Q       = C{6};   % RTKLIB .pos Q
     ns      = C{7};
     sdn     = C{8};
     sde     = C{9};
@@ -142,21 +121,102 @@ else
     sdun    = C{13};
     age     = C{14};
     ratio   = C{15};
+
+    % Timestamp parse: RTKLIB date/time is GPST.
+    tstr = strip(dateStr + " " + timeStr);
+
+    hasDot = contains(tstr, ".");
+    if any(hasDot)
+        parts = split(tstr(hasDot), ".");
+        frac  = parts(:,2);
+        frac  = extractBefore(frac, 4);      % keep up to 3 digits
+        frac  = pad(frac, 3, "right", "0");  % pad to .SSS
+        tstr(hasDot) = parts(:,1) + "." + frac;
+    end
+
+    dt_gpst = NaT(size(tstr), "TimeZone", "UTC");
+    hasMs = contains(tstr, ".");
+    dt_gpst(hasMs)  = datetime(tstr(hasMs),  "InputFormat", "yyyy/MM/dd HH:mm:ss.SSS", "TimeZone", "UTC");
+    dt_gpst(~hasMs) = datetime(tstr(~hasMs), "InputFormat", "yyyy/MM/dd HH:mm:ss",     "TimeZone", "UTC");
+
+elseif true
+    inputFormat = "LIBGNSSPP_EXTENDED";
+
+    % LibGNSS++ extended format after covariance-column patch:
+    %
+    %  1 GPS_Week
+    %  2 GPS_TOW
+    %  3 X(m)
+    %  4 Y(m)
+    %  5 Z(m)
+    %  6 Lat(deg)
+    %  7 Lon(deg)
+    %  8 Height(m)
+    %  9 Status
+    % 10 NumSat
+    % 11 PDOP
+    % 12 Ratio
+    % 13 Baseline(m)
+    % 14 RTKIter
+    % 15 RTKObs
+    % 16 RTKPhaseObs
+    % 17 RTKCodeObs
+    % 18 RTKOutliers
+    % 19 RTKPrefitRMS(m)
+    % 20 RTKPrefitMax(m)
+    % 21 RTKPostSuppressRMS(m)
+    % 22 RTKPostSuppressMax(m)
+    % 23 RTKUpdateNIS
+    % 24 RTKUpdateNISPerObs
+    % 25 RTKUpdateNISRejected
+    % 26 Sde(m)
+    % 27 Sdn(m)
+    % 28 Sdu(m)
+    % 29 Sdne(m2)
+    % 30 Sdeu(m2)
+    % 31 Sdun(m2)
+
+    fmt = char(join(repmat("%f", 1, 31), " "));
+    C = textscan(join(lines, newline), fmt, "MultipleDelimsAsOne", true);
+
+    % Validate required covariance columns.
+    nParsed = numel(C);
+    assert(nParsed >= 31 && ~isempty(C{31}), ...
+        "LibGNSS++ extended .pos must have 31 columns. Regenerate .pos after adding covariance columns.");
+
+    gpsWeek = C{1};
+    gpsTow  = C{2};
+
+    lat   = C{6};
+    lon   = C{7};
+    hgt   = C{8};
+    Q     = int32(C{9});    % LibGNSS++ Status
+    ns    = int32(C{10});
+    ratio = C{12};
+
+    % Added covariance columns.
+    sde  = C{26};
+    sdn  = C{27};
+    sdu  = C{28};
+    sdne = C{29};
+    sdeu = C{30};
+    sdun = C{31};
+
+    % LibGNSS++ .pos has no age field.
+    age = zeros(size(lat));
+
+    % GPS week/TOW -> UTC.
+    gpsEpoch = datetime(1980, 1, 6, 0, 0, 0, "TimeZone", "UTC");
+    dt_gpst = gpsEpoch + days(7 .* double(gpsWeek)) + seconds(double(gpsTow));
 end
 
+fprintf("Input format: %s\n", inputFormat);
 fprintf("Loaded data rows=%d (after dropping non-data lines)\n", numel(lat));
 
 %% -------- Keep filter --------
 keep = (Q >= minQ_keep);
 
-if isWeekTowFormat
-    gpsWeek = gpsWeek(keep);
-    gpsTow  = gpsTow(keep);
-else
-    dateStr = dateStr(keep);
-    timeStr = timeStr(keep);
-end
-
+dt_gpst = dt_gpst(keep);
 lat   = lat(keep);
 lon   = lon(keep);
 hgt   = hgt(keep);
@@ -172,48 +232,13 @@ age   = age(keep);
 ratio = ratio(keep);
 
 N = numel(lat);
-fprintf("Loaded rows=%d (after keep filter Q>=%d)\n", N, minQ_keep);
+fprintf("Loaded rows=%d (after keep filter Q/Status>=%d)\n", N, minQ_keep);
 
-%% -------- Timestamp parse --------
-if isWeekTowFormat
-    % GPST = GPS epoch + week + TOW
-    gpsEpoch = datetime(1980, 1, 6, 0, 0, 0, "TimeZone", "UTC");
-    dt_gpst = gpsEpoch + days(7 .* double(gpsWeek)) + seconds(double(gpsTow));
+%% -------- Timestamp finalize --------
+okTime = ~isnat(dt_gpst);
+badIdx = find(~okTime);
 
-    okTime = ~isnat(dt_gpst);
-    badIdx = find(~okTime);
-
-    fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
-
-else
-    tstr = strip(dateStr + " " + timeStr);
-
-    hasDot = contains(tstr, ".");
-    if any(hasDot)
-        parts = split(tstr(hasDot), ".");
-        frac  = parts(:,2);
-        frac  = extractBefore(frac, 4);      % keep up to 3 digits
-        frac  = pad(frac, 3, "right", "0");  % pad to .SSS
-        tstr(hasDot) = parts(:,1) + "." + frac;
-    end
-
-    dt_gpst = NaT(size(tstr), "TimeZone", "UTC");
-
-    hasMs = contains(tstr, ".");
-    dt_gpst(hasMs)  = datetime(tstr(hasMs),  "InputFormat", "yyyy/MM/dd HH:mm:ss.SSS", "TimeZone", "UTC");
-    dt_gpst(~hasMs) = datetime(tstr(~hasMs), "InputFormat", "yyyy/MM/dd HH:mm:ss",     "TimeZone", "UTC");
-
-    okTime = ~isnat(dt_gpst);
-    badIdx = find(~okTime);
-
-    fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
-
-    if ~isempty(badIdx)
-        k = badIdx(1:min(20,end));
-        disp("---- examples of invalid time strings ----");
-        disp(tstr(k));
-    end
-end
+fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
 
 if any(~okTime)
     fprintf("WARNING: %d rows have invalid timestamp. Dropping them.\n", nnz(~okTime));
@@ -235,7 +260,8 @@ sdun  = sdun(okTime);
 age   = age(okTime);
 ratio = ratio(okTime);
 
-unix_time = posixtime(dt_gpst - seconds(toUTCT));
+dt_utc = dt_gpst - seconds(toUTCT);
+unix_time = posixtime(dt_utc);
 N = numel(unix_time);
 
 fprintf("Time range: %.3f .. %.3f (unix)\n", unix_time(1), unix_time(end));
@@ -243,15 +269,7 @@ if N > 1
     fprintf("dt_median=%.6f s\n", median(diff(unix_time)));
 end
 
-%% -------- Normalize RTKLIB Q to live RTK-like rtk_q --------
-% RTKLIB .pos Q:
-%   1 = fixed
-%   2 = float
-%   4 = DGPS
-%   5 = single
-%   6 = PPP
-%   7 = dead reckoning
-%
+%% -------- Normalize quality to live RTK-like rtk_q --------
 % live RTK-like rtk_q:
 %   0 = invalid / no fix
 %   1 = single
@@ -261,25 +279,35 @@ end
 
 rtk_q_out = zeros(N,1,'uint8');
 
-rtk_q_out(Q == 1) = uint8(4);  % fixed
-rtk_q_out(Q == 2) = uint8(5);  % float
-rtk_q_out(Q == 4) = uint8(2);  % DGPS
-rtk_q_out(Q == 5) = uint8(1);  % single
-
-% PPP has no direct live RTK equivalent in the current convention.
-% Treat as low-grade GNSS for now.
-rtk_q_out(Q == 6) = uint8(1);
-
-% Dead reckoning is not a GNSS PVT solution.
-rtk_q_out(Q == 7) = uint8(0);
+if inputFormat == "RTKLIB"
+    % RTKLIB .pos Q:
+    %   1 = fixed
+    %   2 = float
+    %   4 = DGPS
+    %   5 = single
+    %   6 = PPP
+    %   7 = dead reckoning
+    rtk_q_out(Q == 1) = uint8(4);  % fixed
+    rtk_q_out(Q == 2) = uint8(5);  % float
+    rtk_q_out(Q == 4) = uint8(2);  % DGPS
+    rtk_q_out(Q == 5) = uint8(1);  % single
+    rtk_q_out(Q == 6) = uint8(1);  % PPP: no direct live RTK equivalent
+    rtk_q_out(Q == 7) = uint8(0);  % dead reckoning
+else
+    % LibGNSS++ Status observed in RTK solve:
+    %   3 = RTK float
+    %   4 = RTK fixed
+    %
+    % Other statuses are mapped conservatively.
+    rtk_q_out(Q == 1) = uint8(1);  % single
+    rtk_q_out(Q == 2) = uint8(2);  % DGPS-like
+    rtk_q_out(Q == 3) = uint8(5);  % RTK float
+    rtk_q_out(Q == 4) = uint8(4);  % RTK fixed
+    rtk_q_out(Q == 5) = uint8(1);  % PPP float: no direct live RTK equivalent
+    rtk_q_out(Q == 6) = uint8(1);  % PPP fixed: no direct live RTK equivalent
+end
 
 % Convert live RTK-like rtk_q to internal quality rank.
-% rank:
-%   0 = invalid / no fix
-%   1 = single
-%   2 = DGPS
-%   3 = RTK float
-%   4 = RTK fixed
 rtk_rank_out = zeros(N,1,'uint8');
 rtk_rank_out(rtk_q_out == 1) = uint8(1);
 rtk_rank_out(rtk_q_out == 2) = uint8(2);
@@ -319,13 +347,9 @@ badAge = ~isfinite(age_out) | (age_out > maxAge_s);
 reject_mask(badAge) = bitor(reject_mask(badAge), uint32(8));
 valid(badAge) = false;
 
-% ratio is intentionally not used for valid/reject_mask.
-% PPK/RTKPOST may provide ratio, while live RTK may publish NaN.
-% Keep ratio as a field only.
-
 fprintf("Validity: valid=%d / %d\n", nnz(valid), N);
 
-fprintf("RTKLIB Q counts:\n");
+fprintf("Raw Q/Status counts:\n");
 disp(groupsummary(table(Q), "Q"));
 
 fprintf("Normalized rtk_q counts:\n");

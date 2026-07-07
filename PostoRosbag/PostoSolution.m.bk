@@ -1,12 +1,11 @@
 clear; close all; clc;
 
 %% -------- User settings --------
-dirname  = "asaka_20260323_1";
-parentdirname = "lidar_gnss_log";
+dirname  = "/asaka_training_facility_1";
 username = "wataru";  % <-- CHANGE THIS TO YOUR USERNAME (for file paths)
-posFile  = "/home/" + username + "/" + parentdirname + "/" + dirname + "/astrx.pos";     % input .pos
+posFile  = "/home/" + username + "/ros_bags/"+dirname+"/output.pos";     % input .pos
 
-outdir   = "/home/" + username + "/" + parentdirname + "/" + dirname + "/outputs/gnss";  % output bag folder
+outdir   = "/home/" + username + "/ros_bags/" + dirname + "/outputs/gnss";  % output bag folder
 storage  = "mcap";                                                           % "mcap" or "sqlite3"
 
 topicSol = "/gnss/solution";                                                 % custom msg topic
@@ -75,16 +74,8 @@ while true
     end
 
     % RTKLIB-like data row:
-    %   YYYY/MM/DD HH:MM:SS(.sss) lat lon hgt Q ns ...
-    % or MRTKLIB/RTKLIB GPS week/TOW row:
-    %   GPS_WEEK GPS_TOW lat lon hgt Q ns ...
-    isDateTimeRow = ~isempty(regexp(tline, ...
-        "^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}", "once"));
-
-    isWeekTowRow = ~isempty(regexp(tline, ...
-        "^\d+\s+\d+(\.\d+)?\s+[-+]?\d", "once"));
-
-    if isDateTimeRow || isWeekTowRow
+    % YYYY/MM/DD HH:MM:SS(.sss) lat lon hgt Q ns ...
+    if ~isempty(regexp(tline, "^\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}", "once"))
         lines(end+1,1) = tline; %#ok<SAGROW>
     end
 end
@@ -92,70 +83,35 @@ fclose(fid);
 
 assert(~isempty(lines), "No valid data lines found in .pos.");
 
-firstLine = lines(1);
+% Parse kept lines:
+% date time lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
+C = textscan(join(lines, newline), ...
+    "%s %s %f %f %f %d %d %f %f %f %f %f %f %f %f", ...
+    "MultipleDelimsAsOne", true);
 
-isWeekTowFormat = ~isempty(regexp(firstLine, ...
-    "^\d+\s+\d+(\.\d+)?\s+[-+]?\d", "once"));
-
-if isWeekTowFormat
-    % GPS_WEEK GPS_TOW lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
-    C = textscan(join(lines, newline), ...
-        "%f %f %f %f %f %d %d %f %f %f %f %f %f %f %f", ...
-        "MultipleDelimsAsOne", true);
-
-    gpsWeek = C{1};
-    gpsTow  = C{2};
-    lat     = C{3};
-    lon     = C{4};
-    hgt     = C{5};
-    Q       = C{6};
-    ns      = C{7};
-    sdn     = C{8};
-    sde     = C{9};
-    sdu     = C{10};
-    sdne    = C{11};
-    sdeu    = C{12};
-    sdun    = C{13};
-    age     = C{14};
-    ratio   = C{15};
-
-    dateStr = strings(size(lat));
-    timeStr = strings(size(lat));
-else
-    % date time lat lon hgt Q ns sdn sde sdu sdne sdeu sdun age ratio
-    C = textscan(join(lines, newline), ...
-        "%s %s %f %f %f %d %d %f %f %f %f %f %f %f %f", ...
-        "MultipleDelimsAsOne", true);
-
-    dateStr = string(C{1});
-    timeStr = string(C{2});
-    lat     = C{3};
-    lon     = C{4};
-    hgt     = C{5};
-    Q       = C{6};
-    ns      = C{7};
-    sdn     = C{8};
-    sde     = C{9};
-    sdu     = C{10};
-    sdne    = C{11};
-    sdeu    = C{12};
-    sdun    = C{13};
-    age     = C{14};
-    ratio   = C{15};
-end
+dateStr = string(C{1});
+timeStr = string(C{2});
+lat     = C{3};
+lon     = C{4};
+hgt     = C{5};
+Q       = C{6};   % RTKLIB .pos Q
+ns      = C{7};
+sdn     = C{8};
+sde     = C{9};
+sdu     = C{10};
+sdne    = C{11};
+sdeu    = C{12};
+sdun    = C{13};
+age     = C{14};
+ratio   = C{15};
 
 fprintf("Loaded data rows=%d (after dropping non-data lines)\n", numel(lat));
 
 %% -------- Keep filter --------
 keep = (Q >= minQ_keep);
 
-if isWeekTowFormat
-    gpsWeek = gpsWeek(keep);
-    gpsTow  = gpsTow(keep);
-else
-    dateStr = dateStr(keep);
-    timeStr = timeStr(keep);
-end
+dateStr = dateStr(keep);
+timeStr = timeStr(keep);
 
 lat   = lat(keep);
 lon   = lon(keep);
@@ -175,44 +131,32 @@ N = numel(lat);
 fprintf("Loaded rows=%d (after keep filter Q>=%d)\n", N, minQ_keep);
 
 %% -------- Timestamp parse --------
-if isWeekTowFormat
-    % GPST = GPS epoch + week + TOW
-    gpsEpoch = datetime(1980, 1, 6, 0, 0, 0, "TimeZone", "UTC");
-    dt_gpst = gpsEpoch + days(7 .* double(gpsWeek)) + seconds(double(gpsTow));
+tstr = strip(dateStr + " " + timeStr);
 
-    okTime = ~isnat(dt_gpst);
-    badIdx = find(~okTime);
+hasDot = contains(tstr, ".");
+if any(hasDot)
+    parts = split(tstr(hasDot), ".");
+    frac  = parts(:,2);
+    frac  = extractBefore(frac, 4);      % keep up to 3 digits
+    frac  = pad(frac, 3, "right", "0");  % pad to .SSS
+    tstr(hasDot) = parts(:,1) + "." + frac;
+end
 
-    fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
+dt_gpst = NaT(size(tstr), "TimeZone", "UTC");
 
-else
-    tstr = strip(dateStr + " " + timeStr);
+hasMs = contains(tstr, ".");
+dt_gpst(hasMs)  = datetime(tstr(hasMs),  "InputFormat", "yyyy/MM/dd HH:mm:ss.SSS", "TimeZone", "UTC");
+dt_gpst(~hasMs) = datetime(tstr(~hasMs), "InputFormat", "yyyy/MM/dd HH:mm:ss",     "TimeZone", "UTC");
 
-    hasDot = contains(tstr, ".");
-    if any(hasDot)
-        parts = split(tstr(hasDot), ".");
-        frac  = parts(:,2);
-        frac  = extractBefore(frac, 4);      % keep up to 3 digits
-        frac  = pad(frac, 3, "right", "0");  % pad to .SSS
-        tstr(hasDot) = parts(:,1) + "." + frac;
-    end
+okTime = ~isnat(dt_gpst);
+badIdx = find(~okTime);
 
-    dt_gpst = NaT(size(tstr), "TimeZone", "UTC");
+fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
 
-    hasMs = contains(tstr, ".");
-    dt_gpst(hasMs)  = datetime(tstr(hasMs),  "InputFormat", "yyyy/MM/dd HH:mm:ss.SSS", "TimeZone", "UTC");
-    dt_gpst(~hasMs) = datetime(tstr(~hasMs), "InputFormat", "yyyy/MM/dd HH:mm:ss",     "TimeZone", "UTC");
-
-    okTime = ~isnat(dt_gpst);
-    badIdx = find(~okTime);
-
-    fprintf("Invalid timestamp rows: %d / %d\n", numel(badIdx), numel(dt_gpst));
-
-    if ~isempty(badIdx)
-        k = badIdx(1:min(20,end));
-        disp("---- examples of invalid time strings ----");
-        disp(tstr(k));
-    end
+if ~isempty(badIdx)
+    k = badIdx(1:min(20,end));
+    disp("---- examples of invalid time strings ----");
+    disp(tstr(k));
 end
 
 if any(~okTime)
