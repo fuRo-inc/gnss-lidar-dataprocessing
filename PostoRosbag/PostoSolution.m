@@ -1,8 +1,8 @@
 clear; close all; clc;
 
 %% -------- User settings --------
-dirname  = "asaka_20260323_1";
-parentdirname = "lidar_gnss_log";
+dirname  = "asaka_training_facility_1";
+parentdirname = "ros_bags";
 username = "wataru";  % <-- CHANGE THIS TO YOUR USERNAME (for file paths)
 posFile  = "/home/" + username + "/" + parentdirname + "/" + dirname + "/astrx.pos";     % input .pos
 
@@ -394,6 +394,23 @@ for i = 1:N
 
     sol.position_covariance = reshape(covENU.', 9, 1);
     sol.position_covariance_type = uint8(3);
+    % Attitude fields are not available for mapping logs.
+    % Fill explicitly to match the current GnssSolution.msg.
+    sol.heading_deg = 0.0;
+    sol.pitch_deg   = 0.0;
+    sol.roll_deg    = 0.0;
+
+    sol.heading_valid  = false;
+    sol.pitch_valid    = false;
+    sol.roll_valid     = false;
+    sol.attitude_valid = false;
+
+    sol.heading_std_deg = inf;
+    sol.pitch_std_deg   = inf;
+    sol.roll_std_deg    = inf;
+
+    sol.attitude_error = uint8(1);
+    sol.attitude_mode  = uint8(0);
 
     sol.valid = logical(valid(i));
     sol.reject_mask = uint32(reject_mask(i));
