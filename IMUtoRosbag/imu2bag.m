@@ -1,9 +1,10 @@
 clear; close all; clc;
 
-dirname  = "asaka_20260323_1";
+dirname  = "chiba_nambu_jouka_center_20260701_204933";
 parentdirname = "lidar_gnss_log";
-username = "wataru";  % <-- CHANGE THIS TO YOUR USERNAME (for file paths)
+username = "wataru-furo";  % <-- CHANGE THIS TO YOUR USERNAME (for file paths)
 filename = "/home/" + username + "/" + parentdirname + "/" + dirname + "/astrx.sbf_SBF_ExtSensorMeas1.txt";
+base_outdir = "/home/" + username + "/" + parentdirname + "/" + dirname + "/outputs";
 outdir = "/home/" + username + "/" + parentdirname + "/" + dirname + "/outputs/imu";
 %% -------- Read CSV robustly (27 columns, header + dashed line) --------
 names = [ ...
@@ -114,7 +115,7 @@ end
 bagWriter = ros2bagwriter(outdir, "StorageFormat", "mcap");
 
 %% -------- Write ROS 2 bag (MCAP) + SPLIT ON GAP DURING CONVERSION --------
-base_outdir = "/home/" + username + "/ros_bags/"+dirname+"/outputs";
+
 bag_prefix  = "imu";   % 生成されるフォルダ名: imu_001, imu_002, ...
 
 % ---- DROP CHECK CONFIG ----

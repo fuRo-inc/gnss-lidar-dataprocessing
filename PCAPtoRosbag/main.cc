@@ -325,11 +325,11 @@ int main(int argc, char *argv[]) {
   std::thread writer_thread(writerThreadFunc);
 
   // correction/firetime paths (new style): from package share directory
-  const auto share_dir = "/home/wataru/sruppto_ws/gnss-lidar-dataprocessing/PCAPtoRosbag";
+  const auto share_dir = "/home/wataru-furo/sruppto_ws/src/gnss-lidar-dataprocessing/PCAPtoRosbag";
   stdfs::path correction_dir = stdfs::path(share_dir) / "correction";
 
   stdfs::path correction_csv =
-      correction_dir / "angle_correction" / "XT32M2X_Angle Correction File.csv";
+      correction_dir / "angle_correction" / "XT32M2X_Angle_Correction_File.csv";
   stdfs::path firetime_csv =
       correction_dir / "firetime_correction" / "PandarXT-32M2X_Firetime Correction File.csv";
 
