@@ -382,9 +382,18 @@ for i = 1:N
     Cnn = double(sdn(i))^2;
     Cuu = double(sdu(i))^2;
 
-    Cen = double(sdne(i));
-    Ceu = double(sdeu(i));
-    Cnu = double(sdun(i));
+    % RTKLIB .pos stores sdne/sdeu/sdun as the SIGNED SQUARE ROOT of the
+    % corresponding off-diagonal covariance, not the covariance itself.
+    % The sign carries the sign of the covariance and the magnitude is
+    % sqrt(|covariance|), so recover the covariance in m^2 with
+    %   C = s * |s|
+    % which restores the magnitude (s^2) while preserving the sign of s.
+    % Assigning sdne/sdeu/sdun directly would mix units (m vs m^2) and can
+    % break positive semi-definiteness of the covariance matrix.
+    % This covENU is shared by both /gnss/solution and /gnss/fix below.
+    Cen = double(sdne(i)) * abs(double(sdne(i)));
+    Ceu = double(sdeu(i)) * abs(double(sdeu(i)));
+    Cnu = double(sdun(i)) * abs(double(sdun(i)));
 
     covENU = [ ...
         Cee, Cen, Ceu; ...
